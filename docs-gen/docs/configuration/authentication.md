@@ -34,6 +34,7 @@ The plugin supports the following authentication types:
 - Basic Authentication
 - Jira Cloud
 - Bearer Token
+- Atlassian Rovo MCP (OAuth)
 
 ### Authentication Type: Open
 
@@ -70,6 +71,23 @@ This authentication is used to access Jira instances that uses OAuth2.0.
 
 The specifications of this type  of authentication can be found in the [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750).
 
+### Authentication Type: Atlassian Rovo MCP (OAuth)
+
+Use this type when your organization has retired API tokens and only allows the [Atlassian Rovo MCP server](https://www.atlassian.com/platform/remote-mcp-server). The plugin uses the server only to read data. It does not use any AI features.
+
+1. Set the **Host** to your Jira Cloud site URL (for example `https://mycompany.atlassian.net`).
+2. Select **Atlassian Rovo MCP (OAuth)** as authentication type.
+3. Select **Sign in**. Your browser opens the Atlassian consent page. When you approve, the browser redirects to a temporary listener on `http://localhost:27183/callback` and the plugin stores the tokens.
+4. Select **Save**.
+
+The plugin renews the access token automatically. If the renewal fails, the plugin asks you to sign in again.
+
+Limitations:
+- Desktop only. The sign-in needs a local listener on port `27183`.
+- Your organization must allow `http://localhost` as a redirect address.
+- Inline issues, `jira-issue`, `jira-search` and `jira-count` work. Sprints, boards, the dev status column and custom fields by name do not work.
+- Search results are limited to 100 issues for each query.
+
 ## Priority
 
 The priority defines the order in which the accounts should be used to retrieve the data. It is recommended to put an higher priority to the accounts that are used the most in the Obsidian.md notes.
@@ -84,7 +102,7 @@ To help identify the Jira account used by each tag, it is possible to associate 
 
 ### Credentials storage
 
-The credentials are stored in clear in the configuration file of this plugin.
+The credentials are stored in clear in the configuration file of this plugin. For Rovo MCP accounts, this includes the OAuth access token and refresh token.
 The configuration file is located at:
 ```
 <your vault>/.obsidian/plugins/obsidian-jira-issue/data.json

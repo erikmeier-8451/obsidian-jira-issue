@@ -20,7 +20,7 @@ From the obsidian app go in `Settings > Third-party plugins > Community Plugins 
 
 ## Configuration
 
-Use the plugin options to configure the connection to your Atlassian Jira server: host, username and password.
+Use the plugin options to configure the connection to your Atlassian Jira server: host, username and password. If your organization no longer allows API tokens, sign in with an Atlassian Rovo MCP (OAuth) account instead (desktop only).
 
 [Read more...](https://marc0l92.github.io/obsidian-jira-issue/docs/get-started/basic-authentication)
 
