@@ -5,6 +5,7 @@ export enum EAuthenticationTypes {
     BASIC = 'BASIC',
     CLOUD = 'CLOUD',
     BEARER_TOKEN = 'BEARER_TOKEN',
+    ROVO_MCP = 'ROVO_MCP',
 }
 export enum EColorSchema {
     FOLLOW_OBSIDIAN = 'FOLLOW_OBSIDIAN',
@@ -47,6 +48,14 @@ export interface IJiraIssueSettings {
     bareToken?: string
 }
 
+export interface IMcpOAuthState {
+    clientId: string
+    redirectUri: string
+    accessToken?: string
+    refreshToken?: string
+    expiresAt?: number
+}
+
 export interface IJiraIssueAccountSettings {
     alias: string
     host: string
@@ -54,6 +63,7 @@ export interface IJiraIssueAccountSettings {
     username?: string
     password?: string
     bareToken?: string
+    oauth?: IMcpOAuthState
     priority: number
     color: string
     use2025Api: boolean

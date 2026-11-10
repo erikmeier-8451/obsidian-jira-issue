@@ -1,4 +1,5 @@
 import { App, Notice, PluginSettingTab, Setting, TextComponent } from 'obsidian'
+import { isSignedIn, startSignIn } from './client/mcpClient'
 import JiraClient from './client/jiraClient'
 import { COLOR_SCHEMA_DESCRIPTION, EAuthenticationTypes, EColorSchema, ESearchColumnsTypes, IJiraIssueAccountSettings, IJiraIssueSettings, SEARCH_COLUMNS_DESCRIPTION } from './interfaces/settingsInterfaces'
 import JiraIssuePlugin from './main'
@@ -9,6 +10,7 @@ const AUTHENTICATION_TYPE_DESCRIPTION = {
     [EAuthenticationTypes.BASIC]: 'Basic Authentication',
     [EAuthenticationTypes.CLOUD]: 'Jira Cloud',
     [EAuthenticationTypes.BEARER_TOKEN]: 'Bearer Token',
+    [EAuthenticationTypes.ROVO_MCP]: 'Atlassian Rovo MCP (OAuth)',
 }
 
 export const DEFAULT_SETTINGS: IJiraIssueSettings = {
@@ -340,6 +342,34 @@ export class JiraIssueSettingTab extends PluginSettingTab {
                     .onClick(async () => {
                         this._showPassword = !this._showPassword
                         // Force refresh
+                        this.displayModifyAccountPage(prevAccount, newAccount)
+                    }))
+        } else if (newAccount.authenticationType === EAuthenticationTypes.ROVO_MCP) {
+            const signedIn = isSignedIn(newAccount)
+            new Setting(containerEl)
+                .setName('Atlassian Rovo MCP')
+                .setDesc(signedIn
+                    ? 'Signed in. Remember to save the account. Host must be your Jira site URL (Example: https://mycompany.atlassian.net).'
+                    : 'Sign in with your Atlassian account in the browser. Host must be your Jira site URL (Example: https://mycompany.atlassian.net).')
+                .addButton(button => button
+                    .setButtonText(signedIn ? 'Sign in again' : 'Sign in')
+                    .setCta()
+                    .onClick(async () => {
+                        try {
+                            await startSignIn(newAccount, error => {
+                                new Notice(error ? `JiraIssue: Sign in failed: ${error.message}` : 'JiraIssue: Signed in. Save the account to keep it.')
+                                this.displayModifyAccountPage(prevAccount, newAccount)
+                            })
+                        } catch (e) {
+                            console.error('JiraIssue:SignIn', e)
+                            new Notice(`JiraIssue: Sign in failed: ${(e as Error).message}`)
+                        }
+                    }))
+                .addButton(button => button
+                    .setButtonText('Sign out')
+                    .setDisabled(!signedIn)
+                    .onClick(async () => {
+                        newAccount.oauth = undefined
                         this.displayModifyAccountPage(prevAccount, newAccount)
                     }))
         }

@@ -12,6 +12,7 @@ import { ViewPluginManager } from './rendering/inlineIssueViewPlugin'
 import { QuerySuggest } from './suggestions/querySuggest'
 import { setupIcons } from './icons/icons'
 import API from './api/api'
+import { setPersistCallback } from './client/mcpClient'
 
 // TODO: text on mobile and implement horizontal scrolling
 
@@ -30,6 +31,8 @@ export default class JiraIssuePlugin extends Plugin {
         this._settingTab = new JiraIssueSettingTab(this.app, this)
         await this._settingTab.loadSettings()
         this.addSettingTab(this._settingTab)
+        // Rovo MCP OAuth: persist refreshed tokens
+        setPersistCallback(() => this._settingTab.saveSettings())
         JiraClient.updateCustomFieldsCache()
         // Load icons
         setupIcons()

@@ -2,6 +2,7 @@ import { Platform, requestUrl, RequestUrlParam, RequestUrlResponse } from 'obsid
 import { AVATAR_RESOLUTION, EAuthenticationTypes, IJiraIssueAccountSettings } from '../interfaces/settingsInterfaces'
 import { ESprintState, IJiraAutocompleteField, IJiraBoard, IJiraDevStatus, IJiraField, IJiraIssue, IJiraSearchResults, IJiraSprint, IJiraStatus, IJiraUser } from '../interfaces/issueInterfaces'
 import { SettingsData } from "../settings"
+import { callTool } from './mcpClient'
 
 interface RequestOptions {
     method: string
@@ -164,7 +165,8 @@ async function sendRequestWithAccount(account: IJiraIssueAccountSettings, reques
 
 async function preFetchImage(account: IJiraIssueAccountSettings, url: string): Promise<string> {
     // Pre fetch only images hosted on the Jira server
-    if (!url.startsWith(account.host)) {
+    // Rovo MCP accounts have no REST credentials to fetch Jira-hosted images with
+    if (account.authenticationType === EAuthenticationTypes.ROVO_MCP || !url.startsWith(account.host)) {
         return url
     }
 
@@ -197,15 +199,106 @@ async function fetchIssueImages(issue: IJiraIssue) {
             issue.fields.issuetype.iconUrl = await preFetchImage(issue.account, issue.fields.issuetype.iconUrl)
         }
         if (issue.fields.reporter) {
-            issue.fields.reporter.avatarUrls[AVATAR_RESOLUTION] = await preFetchImage(issue.account, issue.fields.reporter.avatarUrls[AVATAR_RESOLUTION])
+            if (issue.fields.reporter.avatarUrls?.[AVATAR_RESOLUTION]) {
+                issue.fields.reporter.avatarUrls[AVATAR_RESOLUTION] = await preFetchImage(issue.account, issue.fields.reporter.avatarUrls[AVATAR_RESOLUTION])
+            }
         }
-        if (issue.fields.assignee && issue.fields.assignee.avatarUrls && issue.fields.assignee.avatarUrls[AVATAR_RESOLUTION]) {
+        if (issue.fields.assignee?.avatarUrls?.[AVATAR_RESOLUTION]) {
             issue.fields.assignee.avatarUrls[AVATAR_RESOLUTION] = await preFetchImage(issue.account, issue.fields.assignee.avatarUrls[AVATAR_RESOLUTION])
         }
         if (issue.fields.priority && issue.fields.priority.iconUrl) {
             issue.fields.priority.iconUrl = await preFetchImage(issue.account, issue.fields.priority.iconUrl)
         }
     }
+}
+
+function isMcp(account: IJiraIssueAccountSettings): boolean {
+    return account.authenticationType === EAuthenticationTypes.ROVO_MCP
+}
+
+// Runs `fn` against the requested account, or the first account that succeeds, like sendRequest does for REST.
+async function withAccounts<T>(account: IJiraIssueAccountSettings, fn: (account: IJiraIssueAccountSettings) => Promise<T>): Promise<T> {
+    if (account) return fn(account)
+    let lastError: unknown
+    for (const candidate of SettingsData.accounts) {
+        try {
+            return await fn(candidate)
+        } catch (e) {
+            lastError = e
+        }
+    }
+    throw lastError
+}
+
+// The default "compact" view omits fields the renderers read; "full" returns the whole issue.
+// Explicit fields override the view, so only pass them when specific fields were requested.
+function mcpFieldArgs(fields: string[]): Record<string, unknown> {
+    const requested = fields.filter(f => f !== '*all')
+    return requested.length > 0 && !fields.includes('*all') ? { fields: requested } : { view: 'full' }
+}
+
+// The renderers show the description as plain text, but ADF is a JSON document tree.
+function adfToText(node: any): string {
+    if (node === null || node === undefined) return node
+    if (typeof node === 'string') return node
+    if (node.type === 'text') return node.text || ''
+    if (node.type === 'hardBreak') return '\n'
+    const inner = (node.content || []).map(adfToText).join(['paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote'].includes(node.type) ? '' : '')
+    return ['paragraph', 'heading', 'listItem', 'codeBlock', 'blockquote'].includes(node.type) ? inner + '\n' : inner
+}
+
+// Tool results are wrapped in `data` (or `issues.nodes` for search); custom fields may arrive in a `customFields` bucket.
+function mcpIssue(raw: any, account: IJiraIssueAccountSettings): IJiraIssue {
+    const { customFields, ...fields } = raw.fields || {}
+    if (fields.description && typeof fields.description === 'object') {
+        fields.description = adfToText(fields.description).trim()
+    }
+    return { ...raw, fields: { ...fields, ...(customFields || {}) }, account } as IJiraIssue
+}
+
+async function mcpGetIssue(account: IJiraIssueAccountSettings, issueKey: string, fields: string[]): Promise<IJiraIssue> {
+    const result = await callTool(account, 'getJiraIssue', {
+        cloudId: account.host,
+        issueIdOrKey: issueKey,
+        actionSource: 'model_tool_call',
+        ...mcpFieldArgs(fields),
+        responseContentFormat: 'markdown',
+    })
+    return mcpIssue(result.data ?? result, account)
+}
+
+async function mcpSearch(account: IJiraIssueAccountSettings, query: string, limit: number, fields: string[]): Promise<IJiraSearchResults> {
+    // The tool accepts 50-100 results per call; trim afterwards to honour smaller limits.
+    const result = await callTool(account, 'searchJiraIssuesUsingJql', {
+        cloudId: account.host,
+        jql: query,
+        actionSource: 'model_tool_call',
+        ...mcpFieldArgs(fields),
+        maxResults: Math.min(Math.max(limit, 50), 100),
+        searchResultMode: 'all',
+        responseContentFormat: 'markdown',
+    })
+    const data = result.data ?? result
+    const issues: IJiraIssue[] = (data.issues?.nodes ?? data.issues ?? []).slice(0, limit).map((issue: any) => mcpIssue(issue, account))
+    return {
+        issues,
+        total: data.totalCount ?? data.issues?.totalCount,
+        isLast: !(data.isLast === false || data.issues?.pageInfo?.hasNextPage) && (data.issues?.nodes ?? data.issues ?? []).length <= limit,
+        account,
+    }
+}
+
+async function mcpGetLoggedUser(account: IJiraIssueAccountSettings): Promise<IJiraUser> {
+    const user = await callTool(account, 'atlassianUserInfo', {})
+    return {
+        active: user.account_status === 'active',
+        displayName: user.name,
+        name: user.name,
+        key: user.account_id,
+        emailAddress: user.email,
+        self: '',
+        avatarUrls: { '16x16': user.picture, '24x24': user.picture, '32x32': user.picture, '48x48': user.picture },
+    } as IJiraUser
 }
 
 export default {
@@ -218,16 +311,18 @@ export default {
         const queryParameters = new URLSearchParams({
             fields: opt.fields.join(','),
         })
-        const issue = await sendRequest(
-            {
-                method: 'GET',
-                path: `/issue/${issueKey}`,
-                account: opt.account,
-                queryParameters: queryParameters,
-            }
-        ) as IJiraIssue
-        await fetchIssueImages(issue)
-        return issue
+        return withAccounts(opt.account, async account => {
+            const issue = isMcp(account)
+                ? await mcpGetIssue(account, issueKey, opt.fields)
+                : await sendRequest({
+                    method: 'GET',
+                    path: `/issue/${issueKey}`,
+                    account,
+                    queryParameters: queryParameters,
+                }) as IJiraIssue
+            await fetchIssueImages(issue)
+            return issue
+        })
     },
 
     async getSearchResults(query: string, options: { limit?: number, offset?: number, fields?: string[], account?: IJiraIssueAccountSettings } = {}): Promise<IJiraSearchResults> {
@@ -249,21 +344,23 @@ export default {
             nextPageToken: opt.offset > 0 ? opt.offset.toString() : '',
             maxResults: opt.limit > 0 ? opt.limit.toString() : '',
         })
-        const searchResults = await sendRequest(
-            {
-                method: 'GET',
-                path: '/search',
-                path2025: '/search/jql',
-                queryParameters: queryParameters,
-                queryParameters2025: queryParameters2025,
-                account: opt.account,
+        return withAccounts(opt.account, async account => {
+            const searchResults = isMcp(account)
+                ? await mcpSearch(account, query, opt.limit, opt.fields)
+                : await sendRequest({
+                    method: 'GET',
+                    path: '/search',
+                    path2025: '/search/jql',
+                    queryParameters: queryParameters,
+                    queryParameters2025: queryParameters2025,
+                    account,
+                }) as IJiraSearchResults
+            for (const issue of searchResults.issues) {
+                issue.account = searchResults.account
+                await fetchIssueImages(issue)
             }
-        ) as IJiraSearchResults
-        for (const issue of searchResults.issues) {
-            issue.account = searchResults.account
-            await fetchIssueImages(issue)
-        }
-        return searchResults
+            return searchResults
+        })
     },
 
     async updateStatusColorCache(status: string, account: IJiraIssueAccountSettings): Promise<void> {
@@ -282,6 +379,8 @@ export default {
     async updateCustomFieldsCache(): Promise<void> {
         SettingsData.cache.columns = []
         for (const account of SettingsData.accounts) {
+            // Custom field metadata has no MCP equivalent
+            if (isMcp(account)) continue
             try {
                 const response = await sendRequest(
                     {
@@ -343,6 +442,10 @@ export default {
     },
 
     async testConnection(account: IJiraIssueAccountSettings): Promise<boolean> {
+        if (isMcp(account)) {
+            await mcpGetLoggedUser(account)
+            return true
+        }
         await sendRequest(
             {
                 method: 'GET',
@@ -354,13 +457,13 @@ export default {
     },
 
     async getLoggedUser(account: IJiraIssueAccountSettings = null): Promise<IJiraUser> {
-        return await sendRequest(
-            {
+        return withAccounts(account, async a => isMcp(a)
+            ? await mcpGetLoggedUser(a)
+            : await sendRequest({
                 method: 'GET',
                 path: `/myself`,
-                account: account,
-            }
-        ) as IJiraUser
+                account: a,
+            }) as IJiraUser)
     },
 
     async getDevStatus(issueId: string, options: { account?: IJiraIssueAccountSettings } = {}): Promise<IJiraDevStatus> {
